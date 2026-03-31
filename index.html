@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>nyc高中化学教学AI工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        .tab{ padding:10px; cursor:pointer; background:#ccc; display:inline-block; }
+        .active{ background:#6699ff; color:white; }
+        .panel{ display:none; padding:20px; border:1px solid #ccc; height:480px; }
+        #panel1{ display:block; }
+        .output{ background:#f6f6f6; padding:10px; margin:10px 0; border-radius:5px; height:300px; overflow-y:auto; }
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 5px 0;
+        }
+        .col {
+            background: #fff;
+            padding: 8px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+        input{ width:80%; padding:8px; margin:5px 0; }
+        button{ padding:8px 16px; cursor:pointer; border-radius:4px; border:1px solid #ccc; }
+        #crystal{ 
+            width: 100%; 
+            height: 350px; 
+            border:1px solid #ddd; 
+            margin-top:15px;
+            display:none; 
+            position:relative;
+            overflow: hidden;
+        }
+        .crystal-controls {
+            margin: 10px 0;
+            display: none;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .crystal-btn {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+        .exam-tabs{ gap:8px; margin-bottom:10px; display:flex; }
+        .exam-tab{ padding:6px 12px; cursor:pointer; background:#ccc; border:none; border-radius:4px; }
+        .exam-active{ background:#6699ff; color:white; }
+        #options {
+            width: 100%;
+            text-align: left;
+            margin: 15px 0;
+        }
+        .option-item {
+            text-align: left;
+            margin: 10px 0;
+            line-height: 1.6;
+            font-size: 16px;
+        }
+        #choice-buttons {
+            margin: 20px 0;
+        }
+        .choice-btn {
+            padding: 8px 20px;
+            margin: 0 8px;
+            background: #fff;
+            border: 1px solid #ccc;
+            font-size: 16px;
+        }
+        .choice-btn.selected {
+            background: #6699ff;
+            color: white;
+            border-color: #6699ff;
+        }
+        #result { padding:8px; border-radius:4px; margin:10px 0; }
+        .correct { background:#e6f6f6; color:#0052d4; }
+        .wrong { background:#fff2f0; color:#cf1322; }
+        #explanation { margin:10px 0; padding:8px; background:#fff; border-radius:4px; border:1px solid #eee; }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #eee;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #6699ff;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+    </style>
+
+    <!-- Three.js 官方ESM模块引入（仅保留此处，删除原普通脚本） -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        // 1. 先加载THREE和控制器，保证后续代码在THREE就绪后执行
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // 2. 全局变量（THREE已定义，不再报错）
+        var currentTab = 1;
+        var currentExam = 1;
+        var questions = [];
+        var currentQuestionIndex = 0;
+        var userSelectedOption = null;
+
+        // 3D晶胞全局变量（THREE已加载，正常初始化）
+        let scene, camera, renderer, controls;
+        let crystalGroup = new THREE.Group();
+        let voidGroup = new THREE.Group();
+        let isVoidVisible = false;
+        let currentCellParams = null;
+
+        // 3. 先声明formulaMap，再定义getFormulaByName，彻底解决暂时性死区
+        const formulaMap = {
+            "氯化钠": "NaCl", "食盐": "NaCl",
+            "氯化铯": "CsCl",
+            "硫酸铜": "CuSO4",
+            "碳酸钙": "CaCO3",
+            "铜": "Cu", "铁": "Fe", "铝": "Al",
+            "金刚石": "C", "石墨": "C",
+            "水": "H2O", "二氧化碳": "CO2",
+            "氧气": "O2", "氢气": "H2"
+        };
+        function getFormulaByName(name) {
+            return formulaMap[name] || name;
+        }
+
+        // 4. 晶体库请求（带超时+双代理，完全不变）
+        const COD_API = "https://www.crystallography.net/cod/result.json";
+        async function fetchCrystalData(formula) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            try {
+                const proxies = [
+                    "https://corsproxy.io/?url=",
+                    "https://api.allorigins.win/get?url="
+                ];
+                let res, data;
+                for (const proxy of proxies) {
+                    try {
+                        const searchUrl = `${COD_API}?formula=${encodeURIComponent(formula)}&type=inorganic&max=1`;
+                        const url = `${proxy}${searchUrl}`;
+                        res = await fetch(url, { signal: controller.signal });
+                        if (!res.ok) continue;
+                        if (proxy.includes("allorigins.win")) {
+                            const json = await res.json();
+                            data = JSON.parse(json.contents);
+                        } else {
+                            data = await res.json();
+                        }
+                        if (data && data.length > 0) break;
+                    } catch (e) { continue; }
+                }
+                if (!data || data.length === 0) throw new Error(`未找到${formula}的晶体数据`);
+                const cifId = data[0].file;
+                let cifRes, cifContent;
+                for (const proxy of proxies) {
+                    try {
+                        const cifUrl = `${proxy}https://www.crystallography.net/cod/${cifId}.cif`;
+                        cifRes = await fetch(cifUrl, { signal: controller.signal });
+                        if (!cifRes.ok) continue;
+                        if (proxy.includes("allorigins.win")) {
+                            const json = await cifRes.json();
+                            cifContent = json.contents;
+                        } else {
+                            cifContent = await cifRes.text();
+                        }
+                        break;
+                    } catch (e) { continue; }
+                }
+                if (!cifContent) throw new Error("获取晶体文件失败");
+                return parseCIF(cifContent);
+            } catch (e) {
+                console.error("晶体库请求失败:", e);
+                throw e;
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        }
+
+        // 5. CIF文件解析（完全不变）
+        function parseCIF(cif) {
+            const lines = cif.split("\n").map(l=>l.trim()).filter(l=>l&&!l.startsWith("#"));
+            const cell = { a:1, b:1, c:1, alpha:90, beta:90, gamma:90 };
+            const atoms = [];
+            let inAtomLoop = false;
+            lines.forEach(line => {
+                if(line.startsWith("_cell_length_a")) cell.a = parseFloat(line.split(/\s+/).pop());
+                if(line.startsWith("_cell_length_b")) cell.b = parseFloat(line.split(/\s+/).pop());
+                if(line.startsWith("_cell_length_c")) cell.c = parseFloat(line.split(/\s+/).pop());
+                if(line.startsWith("_atom_site_fract_x")) inAtomLoop = true;
+                if(inAtomLoop && !line.startsWith("_") && line.split(/\s+/).length>=5){
+                    const p = line.split(/\s+/);
+                    const ele = p[1].replace(/[0-9]/g,'');
+                    const x = parseFloat(p[2]), y=parseFloat(p[3]), z=parseFloat(p[4]);
+                    if(!isNaN(x)&&!isNaN(y)&&!isNaN(z)) atoms.push({element:ele,x,y,z});
+                }
+            });
+            return atoms.length ? {cell,atoms} : null;
+        }
+
+        // 6. 3D渲染初始化（直接用import的OrbitControls，无需THREE.前缀）
+        function initCrystalViewer() {
+            const container = document.getElementById('crystal');
+            if(renderer) { renderer.dispose(); container.innerHTML=''; }
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf5f5f5);
+            const w = container.clientWidth, h=container.clientHeight;
+            camera = new THREE.PerspectiveCamera(60,w/h,0.1,1000);
+            renderer = new THREE.WebGLRenderer({antialias:true});
+            renderer.setSize(w,h);
+            container.appendChild(renderer.domElement);
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            scene.add(new THREE.AmbientLight(0xffffff,1));
+            const dir = new THREE.DirectionalLight(0xffffff,0.9);
+            dir.position.set(10,10,10);
+            scene.add(dir);
+            scene.add(crystalGroup, voidGroup);
+            animate();
+        }
+        function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);}
+
+        // 7. 渲染晶胞（formulaMap已初始化，不再报错）
+        async function renderRealCrystal(inputName) {
+            const con = document.getElementById('crystal');
+            const ctrl = document.getElementById('crystal-controls');
+            con.style.display='block'; ctrl.style.display='flex';
+            con.innerHTML='<div style="padding:20px; font-size:14px;">正在加载晶胞...</div>';
+            const formula = getFormulaByName(inputName);
+            initCrystalViewer();
+            crystalGroup.clear(); voidGroup.clear();
+            try {
+                const data = await fetchCrystalData(formula);
+                if(!data) throw new Error("未获取到有效晶体数据");
+                currentCellParams = data.cell;
+                const {a,b,c} = data.cell;
+                const box = new THREE.BoxGeometry(a,b,c);
+                const mat = new THREE.MeshBasicMaterial({color:0x6699ff,wireframe:true});
+                crystalGroup.add(new THREE.Mesh(box,mat));
+                const colors = {
+                    Na:0xffd700, Cl:0x00ff00, Cs:0xff4500, Cu:0xff6600, O:0xff0000, 
+                    C:0x333333, Fe:0xffa500, H:0xffffff, Al:0xa9a9a9, Ca:0xffdead
+                };
+                const maxSize = Math.max(a,b,c);
+                data.atoms.forEach(atom=>{
+                    const r = maxSize * 0.1;
+                    const geo = new THREE.SphereGeometry(r,16,16);
+                    const m = new THREE.MeshLambertMaterial({color:colors[atom.element]||0xffffff});
+                    const s = new THREE.Mesh(geo,m);
+                    s.position.set((atom.x-0.5)*a,(atom.y-0.5)*b,(atom.z-0.5)*c);
+                    crystalGroup.add(s);
+                });
+                const dist = maxSize * 2.5;
+                camera.position.set(dist,dist,dist);
+                camera.lookAt(0,0,0);
+                controls.reset();
+                con.querySelector("div")?.remove();
+            } catch (e) {
+                con.innerHTML = `<div style="padding:20px; color:red; font-size:14px;">❌ 晶胞加载失败：${e.message}<br>请尝试输入化学式（如CsCl）或刷新重试</div>`;
+                console.error("渲染失败:", e);
+            }
+        }
+
+        // 8. 晶胞操作（完全不变）
+        function resetCrystalView(){controls.reset();}
+        function expandCrystal(size){
+            if(!currentCellParams)return;
+            crystalGroup.clear();
+            const {a,b,c}=currentCellParams;
+            for(let x=-size;x<=size;x++)for(let y=-size;y<=size;y++)for(let z=-size;z<=size;z++){
+                const g=new THREE.BoxGeometry(a,b,c);
+                const m=new THREE.MeshBasicMaterial({color:0x6699ff,wireframe:true});
+                const box=new THREE.Mesh(g,m);
+                box.position.set(x*a,y*b,z*c);
+                crystalGroup.add(box);
+            }
+        }
+        function showVoid(){
+            isVoidVisible=!isVoidVisible; voidGroup.clear();
+            if(isVoidVisible&&currentCellParams){
+                const g=new THREE.SphereGeometry(0.2,8,8);
+                const m=new THREE.MeshBasicMaterial({color:0xff00ff});
+                voidGroup.add(new THREE.Mesh(g,m));
+            }
+        }
+        function calcCrystalParams(){
+            if(!currentCellParams){alert("无晶胞数据");return;}
+            const {a,b,c}=currentCellParams;
+            alert(`晶胞参数：a=${a.toFixed(2)}Å | b=${b.toFixed(2)}Å | c=${c.toFixed(2)}Å`);
+        }
+
+        // 9. 化学公式渲染（完全不变）
+        function renderChem(str) {
+            return str
+                .replace(/\\boldsymbol\{([^}]+)\}/g, (_,c)=>c)
+                .replace(/\\mathrm\{([^}]+)\}/g, (_,c)=>c)
+                .replace(/\\text\{([^}]+)\}/g, (_,c)=>c)
+                .replace(/\$/g, '')
+                .replace(/\\ce\{([^}]+)\}/g, (_,c)=>c)
+                .replace(/\\Delta/g, '△')
+                .replace(/\\uparrow/g, '↑')
+                .replace(/\\downarrow/g, '↓')
+                .replace(/\\rightleftharpoons/g, '⇌')
+                .replace(/\\xlongequal\{([^}]+)\}/g, (_,c)=>`→(${c})`)
+                .replace(/\\xlongequal/g, '→')
+                .replace(/\\cdot/g, '·')
+                .replace(/->\[([^\]]+)\]/g, '→($1)')
+                .replace(/->/g, '→')
+                .replace(/<=>\[([^\]]+)\]/g, '⇌($1)')
+                .replace(/<=>/g, '⇌')
+                .replace(/e\^\{?-\}?/g, 'e⁻')
+                .replace(/E\^\{?-\}?/g, 'E⁻')
+                .replace(/\^([+-])/g, (_,s)=>s==='+'?'⁺':'⁻')
+                .replace(/\^\{(\d+)([+-])\}/g, (_,n,s)=>{
+                    const sn = n.split('').map(d=>'⁰¹²³⁴⁵⁶⁷⁸⁹'[+d]).join('');
+                    return sn + (s==='+'?'⁺':'⁻');
+                })
+                .replace(/_(\d+)/g, (_,n)=>n.split('').map(d=>'₀₁₂₃₄₅₆₇₈⁹'[+d]).join(''))
+                .replace(/\^(\d+)([+-])/g, (_,n,s)=>{
+                    const sn = n.split('').map(d=>'⁰¹²³⁴⁵⁶⁷⁸⁹'[+d]).join('');
+                    return sn + (s==='+'?'⁺':'⁻');
+                })
+                .replace(/[\\{}^_]/g, '')
+                .replace(/\n/g, '<br>');
+        }
+
+        // 10. 页面切换（完全不变）
+        function switchTab(n){
+            currentTab = n;
+            document.querySelectorAll('.panel').forEach(p=>p.style.display='none');
+            document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+            document.getElementById('panel'+n).style.display='block';
+            document.querySelectorAll('.tab')[n-1].classList.add('active');
+        }
+        function switchExam(n){
+            currentExam = n;
+            document.getElementById('exam-parse').style.display = n===1?'block':'none';
+            document.getElementById('exam-gen').style.display = n===2?'block':'none';
+            document.querySelectorAll('.exam-tab').forEach(t=>t.classList.remove('exam-active'));
+            document.querySelectorAll('.exam-tab')[n-1].classList.add('exam-active');
+            questions = []; currentQuestionIndex=0; userSelectedOption=null;
+            document.getElementById('gen-input').style.display='block';
+            document.getElementById('exam-interactive').style.display='none';
+            document.getElementById('out3').innerHTML='';
+        }
+        function selectOption(letter) {
+            userSelectedOption = letter;
+            document.querySelectorAll('.choice-btn').forEach(btn=>btn.classList.remove('selected'));
+            event.target.classList.add('selected');
+        }
+
+        // 11. AI请求对接本地代理（完全不变，无密钥、无跨域）
+        async function callAI(mode, userText, imgBase64, subMode=1) {
+            let systemPrompt = "";
+            if (mode === 1) {
+                systemPrompt = `你是高中化学课堂探究引导教师。规则：1.不直接给答案 2.分步引导、提问启发 3.语言简单、符合课标 4.不超纲 5.化学方程式用Markdown格式，下标用_数字，上标用^{数字±}，如SO_4^{2-}，反应箭头->，可逆反应用<=>`;
+            } 
+            else if (mode === 2) {
+                systemPrompt = `你是高中化学物质查询助手。必须严格按格式输出：
+===物理性质===
+1.名称、俗称：XXX
+2.颜色、状态、熔沸点：XXX
+===化学性质===
+1.典型反应：XXX
+2.化学方程式：XXX（Markdown格式，下标用_数字，上标用^{数字±}，如SO_4^{2-}，反应->，可逆<=>）
+只输出高中内容`;
+            } 
+            else if (mode === 3) {
+                if(subMode===1){
+                    systemPrompt = `你是高中化学习题解析AI，严格按以下格式输出：
+【答案】：XXX
+【解析】：
+选项A：XXX
+选项B：XXX
+选项C：XXX
+选项D：XXX
+【考点】：XXX
+化学方程式用Markdown格式，下标用_数字，上标用^{数字±}，如SO_4^{2-}，可逆<=>`;
+                }else{
+                    systemPrompt = `你是高中化学出题AI，生成${userText.num}道选择题，严格按以下格式输出：
+---第1题---
+【题干】：XXX
+【选项】
+A.XXX
+B.XXX
+C.XXX
+D.XXX
+【答案】：X
+【解析】：XXX
+【考点】：XXX
+---第2题---
+化学方程式用Markdown格式，下标用_数字，上标用^{数字±}，如SO_4^{2-}，可逆<=>`;
+                }
+            }
+            let userContent = [];
+            let sendText = subMode===2 ? `考点：${userText.point}，数量：${userText.num}` : userText;
+            if (sendText) userContent.push({ type: "text", text: sendText });
+            if (imgBase64) userContent.push({ type: "image_url", image_url: { url: imgBase64 } });
+            
+            try {
+                const res = await fetch("https://chem-ai-proxy.vercel.app/api/chat", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        messages: [
+                            { role: "system", content: systemPrompt },
+                            { role: "user", content: userContent }
+                        ],
+                        temperature:0.2,
+                        max_tokens:8192
+                    })
+                });
+                const data = await res.json();
+                if (data.error) return `AI错误：${data.error}`;
+                return data.choices?.[0]?.message?.content || "无返回";
+            } catch (e) {
+                console.error(e);
+                return "网络/代理错误，请确保Node代理已启动！";
+            }
+        }
+
+        // 12. 习题相关（完全不变）
+        function parseQuestions(reply) {
+            questions = [];
+            const matches = [...reply.matchAll(/---第(\d+)题---([\s\S]*?)(?=---第\d+题---|$)/g)];
+            for(const m of matches){
+                const q = {index:+m[1],stem:"",options:[],answer:"",explanation:"",point:""};
+                const stem = m[2].match(/【题干】：([\s\S]*?)【选项】/);
+                if(stem) q.stem = stem[1].trim();
+                const opts = m[2].match(/【选项】([\s\S]*?)【答案】/);
+                if(opts) q.options = opts[1].trim().split(/\n|<br>/).filter(l=>/^[A-D]\./.test(l.trim()));
+                const ans = m[2].match(/【答案】：([A-D])/);
+                if(ans) q.answer = ans[1].trim();
+                const exp = m[2].match(/【解析】：([\s\S]*?)【考点】/);
+                if(exp) q.explanation = exp[1].trim();
+                const p = m[2].match(/【考点】：([\s\S]*)$/);
+                if(p) q.point = p[1].trim();
+                questions.push(q);
+            }
+            return questions;
+        }
+        function renderCurrentQuestion() {
+            if(currentQuestionIndex>=questions.length){
+                document.getElementById('exam-interactive').innerHTML=`<div style="font-size:18px;color:#0052d4;">🎉 全部完成！</div>`;
+                return;
+            }
+            const q = questions[currentQuestionIndex];
+            document.getElementById('current-question').innerHTML=`<strong>第${q.index}题：</strong>${renderChem(q.stem)}`;
+            const optEl = document.getElementById('options');
+            optEl.innerHTML='';
+            q.options.forEach(o=>{
+                const l = o.charAt(0);
+                const t = o.slice(2).trim();
+                optEl.innerHTML+=`<div class="option-item">${l}. ${renderChem(t)}</div>`;
+            });
+            document.getElementById('progress-fill').style.width=`${((currentQuestionIndex+1)/questions.length)*100}%`;
+            userSelectedOption=null;
+            document.querySelectorAll('.choice-btn').forEach(b=>b.classList.remove('selected'));
+            document.getElementById('result').style.display='none';
+            document.getElementById('explanation').style.display='none';
+            document.getElementById('next-btn').style.display='none';
+            document.getElementById('submit-btn').disabled=false;
+            document.getElementById('submit-btn').innerHTML='提交';
+        }
+        function handleSubmit() {
+            if(!userSelectedOption){alert('请选择选项！');return;}
+            const q=questions[currentQuestionIndex];
+            const res=document.getElementById('result');
+            const exp=document.getElementById('explanation');
+            if(userSelectedOption===q.answer){
+                res.className='correct'; res.innerHTML='✅ 正确！';
+            }else{
+                res.className='wrong'; res.innerHTML=`❌ 错误，答案：${q.answer}`;
+            }
+            res.style.display='block';
+            exp.innerHTML=`<strong>解析：</strong>${renderChem(q.explanation)}<br><strong>考点：</strong>${renderChem(q.point)}`;
+            exp.style.display='block';
+            if(currentQuestionIndex<questions.length-1) document.getElementById('next-btn').style.display='block';
+            else document.getElementById('submit-btn').innerHTML='完成';
+            document.getElementById('submit-btn').disabled=true;
+        }
+        function handleNext() {
+            currentQuestionIndex++;
+            renderCurrentQuestion();
+        }
+
+        // 13. 发送消息（完全不变）
+        async function send(mode, subMode=1) {
+            let input, text, output = document.getElementById(`out${mode}`);
+            let fileInput = document.getElementById(`img${mode}`);
+            let imgBase64 = "";
+            const genBtn = document.getElementById('gen-btn');
+
+            if (fileInput?.files.length>0) {
+                imgBase64 = await new Promise(r=>{
+                    const rdr=new FileReader();
+                    rdr.onloadend=()=>r(rdr.result);
+                    rdr.readAsDataURL(fileInput.files[0]);
+                });
+                fileInput.value="";
+            }
+
+            if(mode===3&&subMode===2){
+                if(genBtn.disabled)return;
+                genBtn.disabled=true;
+                const p=document.getElementById('msg3-2').value.trim();
+                const n=document.getElementById('num3-2').value;
+                if(!p||!n){alert('请输入考点和数量！');genBtn.disabled=false;return;}
+                output.innerHTML+=`<div>👨‍🎓你：生成${n}道${p}习题</div>`;
+                const reply=await callAI(3,{point:p,num:n},imgBase64,2);
+                parseQuestions(reply);
+                document.getElementById('gen-input').style.display='none';
+                document.getElementById('exam-interactive').style.display='block';
+                currentQuestionIndex=0;
+                renderCurrentQuestion();
+                genBtn.disabled=false;
+                return;
+            }
+
+            input = document.getElementById(`msg${mode}`);
+            text = input?.value.trim() || "";
+            if(!text&&!imgBase64)return;
+
+            output.innerHTML+=`<div>👨‍🎓你：${text} ${imgBase64?"[图片]":""}</div>`;
+            input.value="";
+            const reply=await callAI(mode,text,imgBase64,subMode);
+            let rendered=renderChem(reply);
+
+            if(mode===2){
+                const phys=reply.match(/===物理性质===([\s\S]*?)===化学性质===/);
+                const chem=reply.match(/===化学性质===([\s\S]*?)(?=【展示】|$)/);
+                if(phys&&chem){
+                    rendered=`<div class="two-col">
+                        <div class="col"><strong>物理性质</strong><br>${renderChem(phys[1].trim())}</div>
+                        <div class="col"><strong>化学性质</strong><br>${renderChem(chem[1].trim())}</div>
+                    </div>`;
+                }
+                setTimeout(()=>renderRealCrystal(text), 300);
+            }
+
+            output.innerHTML+=`<div>🤖AI：${rendered}</div><br>`;
+            output.scrollTop=output.scrollHeight;
+        }
+
+        // 14. 关键：将HTML onclick需要的全局函数挂载到window，解决模块作用域问题
+        window.switchTab = switchTab;
+        window.switchExam = switchExam;
+        window.selectOption = selectOption;
+        window.resetCrystalView = resetCrystalView;
+        window.expandCrystal = expandCrystal;
+        window.showVoid = showVoid;
+        window.calcCrystalParams = calcCrystalParams;
+        window.handleSubmit = handleSubmit;
+        window.handleNext = handleNext;
+        window.send = send;
+    </script>
+</head>
+<body>
+    <div>
+        <div class="tab active" onclick="switchTab(1)">课堂探究</div>
+        <div class="tab" onclick="switchTab(2)">物质&结构查询</div>
+        <div class="tab" onclick="switchTab(3)">习题检测</div>
+    </div>
+
+    <div class="panel" id="panel1">
+        <div class="output" id="out1"></div>
+        <input id="msg1" placeholder="输入你的问题……">
+        <button onclick="send(1)">发送</button>
+    </div>
+
+    <div class="panel" id="panel2">
+        <div class="output" id="out2"></div>
+        <input id="msg2" placeholder="输入化学式/俗名/结构图……">
+        <input type="file" id="img2" accept="image/*">
+        <button onclick="send(2)">查询（文字/图片）</button>
+        <div class="crystal-controls" id="crystal-controls">
+            <button class="crystal-btn" onclick="resetCrystalView()">重置视图</button>
+            <button class="crystal-btn" onclick="expandCrystal(2)">2×2×2超胞</button>
+            <button class="crystal-btn" onclick="showVoid()">显示空隙</button>
+            <button class="crystal-btn" onclick="calcCrystalParams()">计算参数</button>
+        </div>
+        <div id="crystal"></div>
+    </div>
+
+    <div class="panel" id="panel3">
+        <div class="exam-tabs">
+            <button class="exam-tab" onclick="switchExam(1)">习题解析</button>
+            <button class="exam-tab" onclick="switchExam(2)">AI出题</button>
+        </div>
+        <div id="exam-parse">
+            <input id="msg3" placeholder="输入题目/上传图片文档">
+            <input type="file" id="img3" accept=".pdf,.doc,.docx,.txt,.jpg,.png,.jpeg">
+            <button onclick="send(3,1)">解析题目</button>
+        </div>
+        <div id="exam-gen" style="display:none;">
+            <div id="gen-input">
+                <input id="msg3-2" placeholder="输入考点（如：氧化还原、离子反应）" style="width:40%;">
+                <input id="num3-2" type="number" placeholder="题目数量" value="1" min="1" max="5" style="width:15%;">
+                <button id="gen-btn" onclick="send(3,2)">生成习题</button>
+            </div>
+            <div id="exam-interactive" style="display:none;">
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill" style="width:0%"></div>
+                </div>
+                <div id="current-question" style="font-size:18px; margin-bottom:15px;"></div>
+                <div id="options"></div>
+                <div id="choice-buttons">
+                    <button class="choice-btn" onclick="selectOption('A')">A</button>
+                    <button class="choice-btn" onclick="selectOption('B')">B</button>
+                    <button class="choice-btn" onclick="selectOption('C')">C</button>
+                    <button class="choice-btn" onclick="selectOption('D')">D</button>
+                </div>
+                <button id="submit-btn" onclick="handleSubmit()">提交</button>
+                <div id="result" style="display:none;"></div>
+                <div id="explanation" style="display:none;"></div>
+                <button id="next-btn" onclick="handleNext()" style="display:none; margin-top:10px;">下一题</button>
+            </div>
+        </div>
+        <div class="output" id="out3"></div>
+    </div>
+</body>
+</html>
